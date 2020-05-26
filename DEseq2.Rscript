@@ -1,0 +1,26 @@
+##pheno file
+library(sasas7bdat)
+cchc=read.sas7bdat("~/projects/t2d/new/data/pheno/cchc.sas7bdat")
+##count file
+sample = read.table("sampleID.txt", head=F)
+count.row.name=read.table("~/projects/t2d/new/STAR/count/DR0015EXReadsPerGene.out.tab",header=F)[,1]
+t2d.count = sapply(sample,function(x) read.table(paste0("~/projects/t2d/new/STAR/count/",x,"ReadsPerGene.out.tab"), row.names=1, header=F)[,1])
+rownames(t2d.count)=count.row.name
+t2d.count=t2d.count[-1:-4,]
+zero_count= apply(t2d.count, MARGIN=1, function(x) sum(ifelse(x>0,1,0)))
+##pheno file
+my_sampleTable=read.table("~/projects/t2d/final/pheno/sampleTable.txt", header=T)
+##DESeq2
+library("DESeq2")
+my_countData<-t2d.count[ names(zero_count[zero_count>11]) ,sampleTable$fileName]
+my_dds<-DESeqDataSetFromMatrix(countData=my_countData,colData=my_sampleTable,design=~factor(type)+factor(time))
+rld_F<-rlog(my_dds1,blind=FALSE)
+my_dds1<-estimateSizeFactors(my_dds)
+normalize_counts<-counts(my_dds1,normalized=TRUE)
+ncount=normalize_counts
+ncount[ncount<1]=1
+write.table(ncount, "~/projects/t2d/final/nor_couut.txt", col.names=T, row.names=T, sep="\t", quote=F)
+l2fc=log2(sapply(unique(sampleTable$PRID), function(x) ncount[,sampleTable$fileName[which(sampleTable$PRID==x & sampleTable$time=="follow")]] / ncount[,sampleTable$fileName[which(sampleTable$PRID==x & sampleTable$time=="baseline")]]))
+colnames(l2fc)=unique(sampleTable$PRID)
+rownames(l2fc)=rownames(ncount)
+write.table(l2fc, "~/projects/t2d/final/l2fc.txt", col.names=T, row.names=T, sep="\t", quote=F)
