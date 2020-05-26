@@ -1,0 +1,228 @@
+library(RMySQL)
+library("parallel")
+args= commandArgs(trailingOnly=T)
+#input=read.table(file=file)
+#input=as.vector(as.character(input[,1]))
+pvalue=0.05
+times=100000
+out="phewas.txt"
+cores=15
+phecode="phecode"
+if(args == "-h"){
+        stop("useage: PheWAPermutation2_AllTissue.Rscript file=input_dir out=output_dir phecode=target_phecode(Xxyz.xy: with 'X') pvalue=p-value_for_sig_ass(def=0.05) times=times_of_imputation(def=100000)")
+}
+if(length(args) > 0){
+        for(i in 1:length(args)){
+                foo=strsplit(args[i], "=")
+                if(foo[[1]][1] == "file"){
+                        input=read.table(file=foo[[1]][2])
+                } else if(foo[[1]][1] == "out") {
+                        out=foo[[1]][2]
+                } else if(foo[[1]][1] == "pvalue") {
+                        pvalue=foo[[1]][2]
+                } else if(foo[[1]][1] == "times") {
+                        times=foo[[1]][2]
+                } else if(foo[[1]][1] == "phecode") {
+                        target.phecode=foo[[1]][2]
+                }
+        }
+}
+if(!exists("input") | !exists("out") | !exists("target.phecode")){
+        stop("useage: PheWAPermutation2_AllTissue.Rscript file=input_dir out=output_dir phecode=target_phecode")}
+input=as.vector(as.character(input[,1]))
+#phecode_desc=phecode_desc[which(phecode_desc$description=="Manlignant and unknown neoplasms of brain and nervous system"),]
+con <-  dbConnect(RMySQL::MySQL(),username = "hunghsin", password="password",host="127.0.0.1", dbname="pxcan_for_biovu")
+#query = "SELECT DISTINCT tissue FROM PXCAN_EUR23k"
+##tissue = c("cross", as.vector(dbGetQuery(con, query)[[1]]))
+tissue = c("all")
+## get table of phecode and descriptiont
+#query = "SELECT DISTINCT phecode, description FROM PXCAN_CrossTissue_EUR23k"
+#phecode_desc=dbGetQuery(con, query)
+query = "SELECT DISTINCT phecode, description FROM PXCAN_EUR23k"
+#phecode_desc=unique(rbind(phecode_desc, dbGetQuery(con, query)))
+phecode_desc=unique(dbGetQuery(con, query))
+## get whole gene list
+get.whole.gene=function(x){
+        if(x=="cross"){
+                con <-  dbConnect(RMySQL::MySQL(),username = "hunghsin", password="password",host="127.0.0.1", dbname="pxcan_for_biovu")
+                query = "SELECT DISTINCT gene FROM PXCAN_CrossTissue_EUR23k"
+                wg = dbGetQuery(con, query)
+                dbDisconnect(con)
+                wg
+                } else {
+                con <-  dbConnect(RMySQL::MySQL(),username = "hunghsin", password="password",host="127.0.0.1", dbname="pxcan_for_biovu")
+                query = paste("SELECT DISTINCT gene FROM PXCAN_EUR23k",sep="")
+                wg = dbGetQuery(con, query)
+                dbDisconnect(con)
+                wg
+                }
+        }
+whole.gene=mclapply(tissue, get.whole.gene, mc.cores=cores)
+names(whole.gene)=tissue
+## get specific n for each tissue
+for(tissue.type in tissue){
+        whole.gene[[tissue.type]]$clean_name=sapply(whole.gene[[tissue.type]]$gene, function(y) gsub("`","",y))
+        }
+n.gene.tissue=sapply(tissue, function(x) length(intersect(input, whole.gene[[x]][,2])))
+target.gene.tissue=mclapply(tissue, function(x) intersect(input, whole.gene[[x]][,2]), mc.cores=cores)
+names(target.gene.tissue)=tissue
+## get count table
+print(paste("start count table:", Sys.time(),sep=""))
+get.count.table=function(x){
+        target.gene=whole.gene[[x]]$gene[which(whole.gene[[x]]$clean_name %in% input)]
+        if(x=="cross"){
+                con <-  dbConnect(RMySQL::MySQL(),username = "hunghsin", password="password",host="127.0.0.1", dbname="pxcan_for_biovu")
+                query=paste("SELECT ",phecode,", COUNT(DISTINCT phecode, gene) FROM PXCAN_CrossTissue_EUR23k WHERE pval < ",pvalue," AND gene IN ('",paste(target.gene,collapse="' , '"),"') GROUP BY ",phecode, sep="")
+                count=dbGetQuery(con, query)
+                dbDisconnect(con)
+                count
+                } else {
+                con <-  dbConnect(RMySQL::MySQL(),username = "hunghsin", password="password",host="127.0.0.1", dbname="pxcan_for_biovu")
+                query=paste("SELECT ",phecode,", COUNT(DISTINCT phecode, gene) FROM PXCAN_EUR23k WHERE pval < ",pvalue," AND gene IN ('",paste(target.gene,collapse="' , '"), "') GROUP BY ",phecode, sep="")
+                count=dbGetQuery(con, query)
+                dbDisconnect(con)
+                count
+                }
+        }
+count.tissue=mclapply( tissue, get.count.table, mc.cores=cores)
+names(count.tissue)=tissue
+print(paste("got count table:", Sys.time(),sep=""))
+##coordinates table
+print(paste("start coordinates table:", Sys.time(),sep=""))
+get.coo.phecode=function(tis, dis){
+        if(tis=="cross"){
+                target.gene=whole.gene[[tis]]$gene[which(whole.gene[[tis]]$clean_name %in% input)]
+                con <-  dbConnect(RMySQL::MySQL(),username = "hunghsin", password="password",host="127.0.0.1", dbname="pxcan_for_biovu")
+                query=paste("SELECT beta, pval, gene, phecode FROM PXCAN_CrossTissue_EUR23k WHERE phecode='",dis,"' AND gene IN ('", paste0(target.gene, collapse="' , '"),"')", sep="")
+                coo.data=dbGetQuery(con, query)
+                dbDisconnect(con)
+                beta.p=coo.count(dis, coo.data, target.gene)
+                beta.p
+        } else if (tis=="all"){
+                target.gene=whole.gene[[tis]]$gene[which(whole.gene[[tis]]$clean_name %in% input)]
+                con <-  dbConnect(RMySQL::MySQL(),username = "hunghsin", password="password",host="127.0.0.1", dbname="pxcan_for_biovu")
+                query=paste("SELECT beta, pval, gene, phecode FROM PXCAN_EUR23k WHERE phecode='",dis,"' AND gene  IN ('", paste0(target.gene, collapse="' , '"),"')", sep="")
+                coo.data=dbGetQuery(con, query)
+                dbDisconnect(con)
+                beta.p=coo.count(dis, coo.data, target.gene)
+                beta.p
+        }
+}
+get.coo.table=function(tis){
+        if(tis=="cross"){
+                target.gene=whole.gene[[tis]]$gene[which(whole.gene[[tis]]$clean_name %in% input)]
+                con <-  dbConnect(RMySQL::MySQL(),username = "hunghsin", password="password",host="127.0.0.1", dbname="pxcan_for_biovu")
+                query=paste("SELECT beta, pval, gene, phecode FROM PXCAN_CrossTissue_EUR23k WHERE phecode IN ('", paste0(count.tissue[[tis]][,1], collapse="' , '"),"') AND gene IN ('", paste0(target.gene, collapse="' , '"),"')", sep="")
+                coo.data=dbGetQuery(con, query)
+                dbDisconnect(con)
+                beta.p=mclapply(count.tissue[[tis]][,1], function(x) coo.count(x, coo.data, target.gene), mc.cores=cores)
+                beta.p
+        } else if(tis=="all"){
+                target.gene=whole.gene[[tis]]$gene[which(whole.gene[[tis]]$clean_name %in% input)]
+                con <-  dbConnect(RMySQL::MySQL(),username = "hunghsin", password="password",host="127.0.0.1", dbname="pxcan_for_biovu")
+                query=paste("SELECT beta, pval, gene, phecode FROM PXCAN_EUR23k WHERE phecode IN ('", paste0(count.tissue[[tis]][,1], collapse="' , '"),"') AND gene IN ('", paste0(target.gene, collapse="' , '"),"')", sep="")
+                coo.data=dbGetQuery(con, query)
+                dbDisconnect(con)
+                beta.p=mclapply(count.tissue[[tis]][,1], function(x) coo.count(x, coo.data, target.gene), mc.cores=cores)
+                beta.p
+        }
+}
+coo.count=function(dis, coo.data, target.gene){
+        phe.table=coo.data[which(coo.data$phecode==dis),]
+        phe.coo=sapply(target.gene, function(gene) {
+                minp=min(phe.table[which(phe.table$gene==gene),]$pval)
+                minbeta=phe.table[which(phe.table$gene==gene & phe.table$pval==minp),c("beta","pval")]
+                if(length(minbeta[,1])==0){
+                        minbeta=c(beta=NA, pval=NA)
+                } else if(length(minbeta[,1])>1){
+                        maxbeta=max(abs(minbeta$beta))
+                        minbeta=minbeta[which(abs(minbeta$beta)==maxbeta),]
+                }
+        minbeta
+        })
+        t(phe.coo)
+}
+coo.table=lapply(tissue, get.coo.table)
+names(coo.table)=tissue
+for(tis in tissue){
+        names(coo.table[[tis]])=count.tissue[[tis]]$phecode
+}
+coo.phecode=lapply(tissue, function(x) get.coo.phecode(x, target.phecode))
+names(coo.phecode)=tissue
+get.coo.result=function(tis){
+        target.gene=whole.gene[[tis]]$gene[which(whole.gene[[tis]]$clean_name %in% input)]
+        coo.sum=sapply(count.tissue[[tis]][,1], function(dis) {
+                temp=sapply(target.gene, function(gene){
+                        ifelse(is.na(coo.phecode[[tis]][gene,]$pval) | is.na(coo.table[[tis]][[dis]][gene,]$pval), NA,
+                        ifelse(coo.phecode[[tis]][gene,]$pval < pvalue & coo.table[[tis]][[dis]][gene,]$pval < pvalue,
+                        ifelse(coo.phecode[[tis]][gene,]$beta*coo.table[[tis]][[dis]][gene,]$beta > 0, "s.coo", "s.dis"),
+                        ifelse(coo.phecode[[tis]][gene,]$beta*coo.table[[tis]][[dis]][gene,]$beta > 0, "w.coo", "w.dis")))
+                })
+                c(s.coo=length(temp[temp=="s.coo"]), w.coo=length(temp[temp=="w.coo"]), w.dis=length(temp[temp=="w.dis"]), s.dis=length(temp[temp=="s.dis"]), na.=length(temp[is.na(temp)]))
+        })
+        t(coo.sum)
+}
+coo.result=lapply(tissue, get.coo.result)
+names(coo.result)=tissue
+print(paste("got coordinates table:", Sys.time(),sep=""))
+#print(coo.result[[1]][1:5,])
+#for(tis in tissue){
+#       count.tissue[[tis]]=cbind(count.tissue[[tis]],coo.result[[tis]])
+#}
+##permutation
+permu.R= function(x){
+        random.gene=sample(whole.gene[[x]]$gene, n.gene.tissue[x])
+        as.vector(table(phecode.list[[x]][,phecode][which(phecode.list[[x]]$gene %in% random.gene)])[count.tissue[[x]][,1]])
+        }
+get.R.permu=function(x){
+        ptable=mcmapply(permu.R,rep(times=times,x), mc.cores=cores)
+        if(is.matrix(ptable)){
+                ptable=as.data.frame(ptable)
+                } else {
+                ptable=as.data.frame(t(ptable))
+                }
+        if(length(count.tissue[[x]][,1])==0){
+                ptable=NA
+                } else {
+                rownames(ptable)=count.tissue[[x]][,1]
+                ptable[is.na(ptable)]=0
+                }
+        ptable
+        }
+get.phecode=function(x){
+        con <-  dbConnect(RMySQL::MySQL(),username = "hunghsin", password="password",host="127.0.0.1", dbname="pxcan_for_biovu")
+        if(x=="cross"){
+                query=paste("SELECT DISTINCT ",phecode,", gene, phecode FROM PXCAN_CrossTissue_EUR23k WHERE pval < ",pvalue," AND ",phecode," IN ('", paste0(count.tissue[[x]][,1], collapse="' , '"),"')", sep="")
+        } else {
+                query=paste("SELECT DISTINCT ",phecode,", gene, phecode FROM PXCAN_EUR23k WHERE pval < ",pvalue," AND ",phecode," IN ('", paste0(count.tissue[[x]][,1], collapse="' , '"),"')", sep="")
+        }
+        pl=dbGetQuery(con, query)
+        dbDisconnect(con)
+        pl
+        }
+phecode.list=mclapply(tissue, get.phecode, mc.cores=cores)
+names(phecode.list)=tissue
+permu.table=lapply(tissue, get.R.permu)
+names(permu.table)=tissue
+rm(phecode.list)
+print(paste("got permutation table:", Sys.time(),sep=""))
+get.stat=function(x,y){
+        ct=count.tissue[[x]][which(count.tissue[[x]][,1]==y),2]
+        mx=max(permu.table[[x]][y,])
+        pv=1-ecdf(as.numeric(permu.table[[x]][y,]))(ct)
+        pt=as.numeric(quantile(as.integer(permu.table[[x]][y,]), c(.01, .05, .10, .5, .9, .95, .99), type=3))
+        names(pt)=c("p01","p05","p10","p50","p90","p95","p99")
+        des=phecode_desc$description[which(phecode_desc$phecode==y)]
+        coo=coo.result[[x]][y,]
+        c(pheno=y,tissue=x,count=ct, p.value=pv, pt, max=mx, description=des,coo)
+        }
+get.summary=function(x){
+        as.data.frame(t(sapply(count.tissue[[x]][,1], function(y) get.stat(x,y))))
+        }
+sum.table=mclapply(tissue, get.summary, mc.cores=cores)
+names(sum.table)=tissue
+#for(x in tissue){
+#       write.table(sum.table[[x]], paste(out,"_",x,".txt",sep=""), col.names=T,row.names=F,sep="\t",quote=F)
+#}
+sum.all=do.call(rbind, sum.table)
+write.table(sum.all, paste(out,"_",phecode,"_all.txt",sep=""), col.names=T,row.names=F,sep="\t",quote=F)
